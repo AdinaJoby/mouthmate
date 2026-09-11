@@ -1,0 +1,850 @@
+import cv2
+import mediapipe as mp
+import pygame
+import numpy as np
+import os
+import random
+import time
+from PIL import Image, ImageDraw, ImageFont
+
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
+MAR_THRESHOLD = 0.20
+
+OPEN_FRAMES_NEEDED = 3
+
+# ============================================================
+# PATHS
+# ============================================================
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+MODEL_PATH = os.path.join(
+    BASE_DIR,
+    "models",
+    "face_landmarker.task"
+)
+
+STICKER_FOLDER = os.path.join(
+    BASE_DIR,
+    "stickers"
+)
+
+
+# ============================================================
+# AUDIO
+# ============================================================
+
+pygame.mixer.init()
+
+AUDIO_NAMES = [
+    "audio.1.mpeg",
+    "audio 2.mpeg",
+    "audio 3.mpeg"
+]
+
+sounds = []
+
+for i, filename in enumerate(AUDIO_NAMES):
+
+    path = os.path.join(
+        BASE_DIR,
+        filename
+    )
+
+    if os.path.exists(path):
+
+        try:
+
+            sound = pygame.mixer.Sound(path)
+
+            sounds.append(sound)
+
+            print(
+                f"[OK] Audio {i + 1}: {filename}"
+            )
+
+        except Exception as e:
+
+            print(
+                f"[ERROR] Audio {i + 1}: {e}"
+            )
+
+    else:
+
+        print(
+            f"[MISSING] Audio {i + 1}: {filename}"
+        )
+
+
+if len(sounds) == 0:
+
+    print("No audio files were loaded.")
+
+    input("Press ENTER to exit...")
+
+    raise SystemExit
+
+
+# ============================================================
+# STICKERS
+# ============================================================
+
+sticker_files = [
+
+    os.path.join(
+        STICKER_FOLDER,
+        "sticker1.png"
+    ),
+
+    os.path.join(
+        STICKER_FOLDER,
+        "sticker2.png"
+    ),
+
+    os.path.join(
+        STICKER_FOLDER,
+        "sticker3.png"
+    )
+]
+
+stickers = []
+
+
+for path in sticker_files:
+
+    if os.path.exists(path):
+
+        try:
+
+            img = cv2.imread(
+                path,
+                cv2.IMREAD_UNCHANGED
+            )
+
+            if img is not None:
+
+                stickers.append(img)
+
+                print(
+                    "[OK] Sticker:",
+                    os.path.basename(path)
+                )
+
+        except Exception as e:
+
+            print(
+                "[ERROR] Sticker:",
+                e
+            )
+
+
+# ============================================================
+# MALAYALAM FONT
+# ============================================================
+
+FONT_OPTIONS = [
+
+    r"C:\Windows\Fonts\Nirmala.ttf",
+
+    r"C:\Windows\Fonts\NirmalaUI.ttf",
+
+    r"C:\Windows\Fonts\NirmalaUI-Bold.ttf"
+]
+
+FONT_PATH = None
+
+
+for font_path in FONT_OPTIONS:
+
+    if os.path.exists(font_path):
+
+        FONT_PATH = font_path
+
+        break
+
+
+if FONT_PATH:
+
+    try:
+
+        malayalam_font = ImageFont.truetype(
+            FONT_PATH,
+            42
+        )
+
+    except:
+
+        malayalam_font = None
+
+else:
+
+    malayalam_font = None
+
+
+# ============================================================
+# MEDIAPIPE
+# ============================================================
+
+BaseOptions = mp.tasks.BaseOptions
+
+FaceLandmarker = (
+    mp.tasks.vision.FaceLandmarker
+)
+
+FaceLandmarkerOptions = (
+    mp.tasks.vision.FaceLandmarkerOptions
+)
+
+VisionRunningMode = (
+    mp.tasks.vision.RunningMode
+)
+
+
+options = FaceLandmarkerOptions(
+
+    base_options=BaseOptions(
+        model_asset_path=MODEL_PATH
+    ),
+
+    running_mode=VisionRunningMode.VIDEO,
+
+    num_faces=1
+)
+
+
+landmarker = (
+    FaceLandmarker.create_from_options(
+        options
+    )
+)
+
+
+# ============================================================
+# CAMERA
+# ============================================================
+
+cap = cv2.VideoCapture(0)
+
+
+if not cap.isOpened():
+
+    print("Could not open camera.")
+
+    input("Press ENTER to exit...")
+
+    raise SystemExit
+
+
+# ============================================================
+# VARIABLES
+# ============================================================
+
+mouth_open_frames = 0
+
+# True while mouth is currently open
+mouth_was_open = False
+
+# Audio sequence
+current_audio_index = 0
+
+# Current sticker
+sticker = None
+
+# Sticker expiry
+sticker_until = 0
+
+
+# ============================================================
+# DISTANCE
+# ============================================================
+
+def distance(p1, p2):
+
+    return np.linalg.norm(
+        np.array(p1) -
+        np.array(p2)
+    )
+
+
+# ============================================================
+# MAIN LOOP
+# ============================================================
+
+while True:
+
+    ret, frame = cap.read()
+
+
+    if not ret:
+
+        break
+
+
+    # Mirror camera
+    frame = cv2.flip(
+        frame,
+        1
+    )
+
+
+    # ========================================================
+    # MEDIAPIPE IMAGE
+    # ========================================================
+
+    rgb_frame = cv2.cvtColor(
+        frame,
+        cv2.COLOR_BGR2RGB
+    )
+
+
+    mp_image = mp.Image(
+        image_format=mp.ImageFormat.SRGB,
+        data=rgb_frame
+    )
+
+
+    timestamp_ms = int(
+        time.time() * 1000
+    )
+
+
+    result = landmarker.detect_for_video(
+        mp_image,
+        timestamp_ms
+    )
+
+
+    # ========================================================
+    # FACE FOUND
+    # ========================================================
+
+    if result.face_landmarks:
+
+        landmarks = result.face_landmarks[0]
+
+        h, w = frame.shape[:2]
+
+
+        # ====================================================
+        # MOUTH LANDMARKS
+        # ====================================================
+
+        p13 = landmarks[13]
+
+        p14 = landmarks[14]
+
+        p78 = landmarks[78]
+
+        p308 = landmarks[308]
+
+
+        point13 = (
+            int(p13.x * w),
+            int(p13.y * h)
+        )
+
+        point14 = (
+            int(p14.x * w),
+            int(p14.y * h)
+        )
+
+        point78 = (
+            int(p78.x * w),
+            int(p78.y * h)
+        )
+
+        point308 = (
+            int(p308.x * w),
+            int(p308.y * h)
+        )
+
+
+        # ====================================================
+        # MAR
+        # ====================================================
+
+        vertical_distance = distance(
+            point13,
+            point14
+        )
+
+        horizontal_distance = distance(
+            point78,
+            point308
+        )
+
+
+        if horizontal_distance > 0:
+
+            mar = (
+                vertical_distance /
+                horizontal_distance
+            )
+
+        else:
+
+            mar = 0
+
+
+        # ====================================================
+        # MOUTH STATUS
+        # ====================================================
+
+        mouth_is_open = (
+            mar > MAR_THRESHOLD
+        )
+
+
+        if mouth_is_open:
+
+            mouth_open_frames += 1
+
+        else:
+
+            mouth_open_frames = 0
+
+            # IMPORTANT:
+            # Closing the mouth resets the trigger.
+            #
+            # The next audio can ONLY happen after
+            # the mouth closes and then opens again.
+
+            mouth_was_open = False
+
+
+        # ====================================================
+        # AUDIO TRIGGER
+        # ====================================================
+
+        if (
+            mouth_open_frames >= OPEN_FRAMES_NEEDED
+            and not mouth_was_open
+        ):
+
+
+            # =================================================
+            # MOST IMPORTANT PART
+            # =================================================
+            #
+            # If ANY audio is currently playing,
+            # DO NOTHING.
+            #
+            # This prevents:
+            #
+            # Audio 1
+            # Audio 1 + Audio 2
+            # Audio 1 + Audio 2 + Audio 3
+            #
+            # from overlapping.
+            # =================================================
+
+            if not pygame.mixer.get_busy():
+
+
+                # =============================================
+                # PLAY CURRENT AUDIO
+                # =============================================
+
+                sounds[
+                    current_audio_index
+                ].play()
+
+
+                print(
+                    f"Playing Audio "
+                    f"{current_audio_index + 1}"
+                )
+
+
+                # =============================================
+                # NEXT AUDIO
+                # =============================================
+
+                current_audio_index += 1
+
+
+                if (
+                    current_audio_index
+                    >= len(sounds)
+                ):
+
+                    current_audio_index = 0
+
+
+                # =============================================
+                # STICKER
+                # =============================================
+
+                if stickers:
+
+                    sticker = random.choice(
+                        stickers
+                    )
+
+                    sticker_until = (
+                        time.time() + 2.0
+                    )
+
+
+            else:
+
+                # Audio is already playing.
+                #
+                # Ignore this mouth opening completely.
+
+                print(
+                    "Audio still playing - ignored."
+                )
+
+
+            # =================================================
+            # IMPORTANT
+            # =================================================
+            #
+            # Even if audio was already playing,
+            # this opening has been handled.
+            #
+            # User must CLOSE mouth and OPEN again
+            # for another attempt.
+            # =================================================
+
+            mouth_was_open = True
+
+
+        # ====================================================
+        # DISPLAY MAR
+        # ====================================================
+
+        cv2.putText(
+            frame,
+            f"MAR: {mar:.2f}",
+            (20, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 0),
+            2
+        )
+
+
+        # ====================================================
+        # DISPLAY STATUS
+        # ====================================================
+
+        if mouth_is_open:
+
+            status = "MOUTH OPEN!"
+
+        else:
+
+            status = "MOUTH CLOSED"
+
+
+        cv2.putText(
+            frame,
+            status,
+            (20, 75),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 255),
+            2
+        )
+
+
+    # ========================================================
+    # NO FACE
+    # ========================================================
+
+    else:
+
+        mouth_open_frames = 0
+
+        mouth_was_open = False
+
+        cv2.putText(
+            frame,
+            "NO FACE DETECTED",
+            (20, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 0, 255),
+            2
+        )
+
+
+    # ========================================================
+    # STICKER
+    # ========================================================
+
+    if (
+        sticker is not None
+        and time.time() < sticker_until
+    ):
+
+        sticker_img = sticker.copy()
+
+
+        sticker_h, sticker_w = (
+            sticker_img.shape[:2]
+        )
+
+
+        new_height = int(
+            sticker_h *
+            180 /
+            sticker_w
+        )
+
+
+        sticker_img = cv2.resize(
+            sticker_img,
+            (
+                180,
+                new_height
+            )
+        )
+
+
+        sh, sw = sticker_img.shape[:2]
+
+
+        # Right side
+        x = (
+            frame.shape[1]
+            - sw
+            - 30
+        )
+
+        y = 100
+
+
+        if (
+            x >= 0
+            and y >= 0
+            and y + sh <= frame.shape[0]
+        ):
+
+
+            # =================================================
+            # TRANSPARENT PNG
+            # =================================================
+
+            if sticker_img.shape[2] == 4:
+
+                alpha = (
+                    sticker_img[:, :, 3]
+                    .astype(float)
+                    / 255.0
+                )
+
+
+                alpha = (
+                    alpha[:, :, np.newaxis]
+                )
+
+
+                sticker_rgb = (
+                    sticker_img[:, :, :3]
+                )
+
+
+                background = frame[
+                    y:y + sh,
+                    x:x + sw
+                ]
+
+
+                blended = (
+                    alpha * sticker_rgb
+                    +
+                    (1 - alpha) * background
+                )
+
+
+                frame[
+                    y:y + sh,
+                    x:x + sw
+                ] = blended.astype(
+                    np.uint8
+                )
+
+
+            # =================================================
+            # NORMAL PNG
+            # =================================================
+
+            else:
+
+                sticker_rgb = (
+                    sticker_img.copy()
+                )
+
+
+                white_mask = cv2.inRange(
+                    sticker_rgb,
+                    np.array(
+                        [230, 230, 230]
+                    ),
+                    np.array(
+                        [255, 255, 255]
+                    )
+                )
+
+
+                alpha = (
+                    255 -
+                    white_mask
+                ).astype(float) / 255.0
+
+
+                alpha = (
+                    alpha[:, :, np.newaxis]
+                )
+
+
+                background = frame[
+                    y:y + sh,
+                    x:x + sw
+                ]
+
+
+                blended = (
+                    alpha * sticker_rgb
+                    +
+                    (1 - alpha) * background
+                )
+
+
+                frame[
+                    y:y + sh,
+                    x:x + sw
+                ] = blended.astype(
+                    np.uint8
+                )
+
+
+    # ========================================================
+    # MALAYALAM TEXT
+    # ========================================================
+
+    text = "വായ അടയ്ക്കെടാ!"
+
+
+    if malayalam_font is not None:
+
+        try:
+
+            rgb = cv2.cvtColor(
+                frame,
+                cv2.COLOR_BGR2RGB
+            )
+
+
+            pil_img = Image.fromarray(
+                rgb
+            )
+
+
+            draw = ImageDraw.Draw(
+                pil_img
+            )
+
+
+            bbox = draw.textbbox(
+                (0, 0),
+                text,
+                font=malayalam_font
+            )
+
+
+            text_width = (
+                bbox[2] - bbox[0]
+            )
+
+
+            text_x = (
+                frame.shape[1]
+                - text_width
+                - 30
+            )
+
+
+            text_y = 30
+
+
+            draw.text(
+                (
+                    text_x,
+                    text_y
+                ),
+                text,
+                font=malayalam_font,
+                fill=(255, 255, 0),
+                stroke_width=3,
+                stroke_fill=(0, 0, 0)
+            )
+
+
+            frame = cv2.cvtColor(
+                np.array(pil_img),
+                cv2.COLOR_RGB2BGR
+            )
+
+
+        except:
+
+            pass
+
+
+    else:
+
+        cv2.putText(
+            frame,
+            "VAAYA ADAYKKEDA!",
+            (
+                20,
+                frame.shape[0] - 30
+            ),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (0, 255, 255),
+            2
+        )
+
+
+    # ========================================================
+    # CAMERA WINDOW
+    # ========================================================
+
+    cv2.imshow(
+        "Mouth Open Soundboard",
+        frame
+    )
+
+
+    # ========================================================
+    # QUIT
+    # ========================================================
+
+    if (
+        cv2.waitKey(1) & 0xFF
+        == ord("q")
+    ):
+
+        break
+
+
+# ============================================================
+# CLEANUP
+# ============================================================
+
+cap.release()
+
+cv2.destroyAllWindows()
+
+landmarker.close()
+
+pygame.mixer.quit()
