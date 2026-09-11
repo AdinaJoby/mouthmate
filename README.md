@@ -8,7 +8,7 @@ CHILLARA
 
 * **Team Lead:** Adina Joby - St. Joseph's college of engineering and technology , palai
 * **Member 2:** Angel John Shaje - St. Joseph's college of engineering and technology , palai
-* 
+
 # Project Description
 
 Have you ever noticed that people mysteriously open their mouths while applying eye makeup?
